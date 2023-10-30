@@ -15,7 +15,7 @@ int main()
     char s[300];
     int num, fd[2];
     char input[100];
-    char received_message[300]; // Buffer to store the received message
+    char received_message[300];
 
     mkfifo(FIFO_READ, 0666);
     mkfifo(FIFO_WRITE, 0666);

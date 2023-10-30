@@ -12,6 +12,8 @@
 #define FIFO_READ "myReadFifo"
 #define FIFO_WRITE "mySendFifo"
 #define FORKERROR "FORK ERROR\n"
+#define FILE_ERROR "FILE ERROR\n"
+#define PIPE_ERROR "PIPE ERROR\n"
 
 int checkLogin(char user[100], char password[100])
 {
@@ -23,7 +25,7 @@ int checkLogin(char user[100], char password[100])
     file = fopen("credentials.txt", "r");
     if (file == NULL)
     {
-        printf("Could not open file");
+        printf(FILE_ERROR);
         return 0;
     }
 
@@ -69,8 +71,6 @@ int main()
             pid_t pid = fork();
             if (pid == 0)
             {
-                // Child process
-                // process_command(s);
                 printf("Command received: %s", s);
                 fflush(stdout);
 
@@ -113,158 +113,141 @@ int main()
                         {
                             perror(FORKERROR);
                         }
+                        exit(0);
                     }
                 }
                 else if (strcmp(s, "get-logged-users\n") == 0)
                 {
-                    if (loggedIn == 0)
+
+                    pid_t child = fork();
+
+                    if (child == 0)
                     {
-                        write(fd[1], "You are not logged in!\n", strlen("You are not logged in!\n"));
-                        continue;
+                        // Child process
+                        struct utmpx *entry;
+                        setutxent();
+                        char raspuns[1000] = "Useri Conectati:\n";
+
+                        while ((entry = getutxent()) != NULL)
+                        {
+                            if (entry->ut_type == USER_PROCESS)
+                            {
+                                printf("User: %s\n", entry->ut_user);
+                                printf("Host: %s\n", entry->ut_host);
+                                strcat(raspuns, entry->ut_user);
+                                strcat(raspuns, " ");
+                                strcat(raspuns, entry->ut_host);
+                                strcat(raspuns, "\n");
+                            }
+                        }
+
+                        endutxent();
+                        // Write the response to the client
+                        write(fd[1], raspuns, strlen(raspuns));
+
+                        exit(0);
+                    }
+                    else if (child > 0)
+                    {
+                        wait(NULL);
                     }
                     else
                     {
-                        pid_t child = fork();
-
-                        if (child == 0)
-                        {
-                            // Child process
-                            struct utmpx *entry;
-                            setutxent();
-                            char raspuns[1000] = "Useri Conectati:\n"; // Fixed typo
-
-                            while ((entry = getutxent()) != NULL)
-                            {
-                                if (entry->ut_type == USER_PROCESS)
-                                {
-                                    printf("User: %s\n", entry->ut_user);
-                                    printf("Host: %s\n", entry->ut_host);
-                                    strcat(raspuns, entry->ut_user);
-                                    strcat(raspuns, " ");
-                                    strcat(raspuns, entry->ut_host);
-                                    strcat(raspuns, "\n");
-                                }
-                            }
-
-                            endutxent();
-                            // Write the response to the client
-                            write(fd[1], raspuns, strlen(raspuns));
-
-                            exit(0);
-                        }
-                        else if (child > 0)
-                        {
-                            // Parent process
-                            // Optionally, you can wait for the child process to complete
-                            wait(NULL);
-                        }
-                        else
-                        {
-                            // Error handling for fork
-                            perror(FORKERROR);
-                        }
+                        perror(FORKERROR);
                     }
                 }
 
-                else if (strcmp(s, "get-proc-info") == 0)
+                else if (strcmp(s, "get-proc-info\n") == 0)
                 {
-                    if (loggedIn == 0)
-                    {
-                        write(fd[1], "You are not logged in!\n", strlen("You are not logged in!\n"));
-                        continue;
-                    }
-                    else
-                    {
 
-                        int myPipe[2];
-                        if (pipe(myPipe) < 0)
+                    int myPipe[2];
+                    if (pipe(myPipe) < 0)
+                    {
+                        perror(PIPE_ERROR);
+                        exit(1);
+                    }
+
+                    pid_t child = fork();
+
+                    if (child > 0)
+                    {
+                        close(myPipe[1]);
+
+                        char aux[256];
+                        int auxL;
+                        auxL = read(myPipe[0], aux, 256);
+
+                        aux[auxL] = '\0';
+
+                        write(fd[1], aux, auxL);
+                    }
+                    else if (child == 0)
+                    {
+                        close(myPipe[0]);
+
+                        char *childComanda = strtok(s, " ");
+                        for (int i = 1; i <= 2; i++)
                         {
-                            perror("Pipe error");
+                            childComanda = strtok(NULL, " \n");
+                        }
+
+                        char sursa[50];
+                        snprintf(sursa, sizeof(sursa), "/proc/%s/status", childComanda);
+
+                        FILE *fp = fopen(sursa, "r");
+                        if (fp == NULL)
+                        {
+                            perror(FILE_ERROR);
                             exit(1);
                         }
 
-                        pid_t child = fork();
-
-                        if (child > 0)
+                        char line[256];
+                        while (fgets(line, sizeof(line), fp) != NULL)
                         {
-                            close(myPipe[1]);
-
-                            char aux[256];
-                            int auxL;
-                            auxL = read(myPipe[0], aux, 256);
-
-                            aux[auxL] = '\0';
-
-                            write(fd[1], aux, auxL);
-                        }
-                        else if (child == 0)
-                        {
-                            close(myPipe[0]);
-
-                            char *childComanda = strtok(s, " ");
-                            for (int i = 1; i <= 2; i++)
+                            if (strstr(line, "Name") || strstr(line, "State") || strstr(line, "Ppid") || strstr(line, "Vmsize") || strstr(line, "Uid"))
                             {
-                                childComanda = strtok(NULL, " \n");
+                                write(myPipe[1], line, strlen(line));
                             }
-
-                            char sursa[50];
-                            snprintf(sursa, sizeof(sursa), "/proc/%s/status", childComanda);
-
-                            FILE *fp = fopen(sursa, "r");
-                            if (fp == NULL)
-                            {
-                                perror("Error opening file");
-                                exit(1);
-                            }
-
-                            char line[256];
-                            while (fgets(line, sizeof(line), fp) != NULL)
-                            {
-                                if (strstr(line, "Name") || strstr(line, "State") || strstr(line, "Ppid") || strstr(line, "Vmsize") || strstr(line, "Uid"))
-                                {
-                                    write(myPipe[1], line, strlen(line));
-                                }
-                            }
-                            fclose(fp);
-                            exit(0);
                         }
-                        else
-                        {
-                            perror("Fork error");
-                        }
+                        fclose(fp);
+                        exit(0);
+                    }
+                    else
+                    {
+                        perror(PIPE_ERROR);
                     }
                 }
 
                 else if (strcmp(s, "logout\n") == 0)
                 {
+                    /*
                     if (loggedIn == 0)
                     {
                         write(fd[1], "You are not logged in!\n", strlen("You are not logged in!\n"));
                         continue;
                     }
+                    */
+                    pid_t child = fork();
+                    if (child == 0)
+                    {
+                        loggedIn = 0;
+                        write(fd[1], "Logout successful!\n", strlen("Logout successful!\n"));
+                        printf("A user logged out\n");
+                    }
+                    else if (child > 0)
+                    {
+                        wait(NULL);
+                    }
                     else
                     {
-                        pid_t child = fork();
-                        if (child == 0)
-                        {
-                            loggedIn = 0;
-                            write(fd[1], "Logout successful!\n", strlen("Logout successful!\n"));
-                            printf("A user logged out\n");
-                        }
-                        else if (child > 0)
-                        {
-                            wait(NULL);
-                        }
-                        else
-                        {
-                            perror(FORKERROR);
-                        }
+                        perror(FORKERROR);
                     }
                 }
+
                 else if (strcmp(s, "exit\n") == 0)
                 {
                     write(fd[1], "Exiting...\n", strlen("Exiting...\n"));
-                    return 0;
+                    break;
                 }
                 else
                 {
@@ -274,8 +257,6 @@ int main()
             }
             else if (pid > 0)
             {
-                // Parent process
-                // Optionally, you can wait for the child process to complete
                 wait(NULL);
             }
             else
